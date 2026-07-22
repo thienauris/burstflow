@@ -2,7 +2,9 @@ import Dexie from 'dexie';
 
 // Local-first + sync. status task: 'inbox' | 'ready' | 'done'
 // Mỗi record đồng bộ có: id (UUID chuỗi), updated_at (ms), deleted (0/1 - soft delete để xoá cũng sync được).
-export const db = new Dexie('burstflow');
+// DB tên 'burstflow2' (khoá chuỗi ngay từ đầu). Dexie KHÔNG hỗ trợ đổi primary key nên không nâng cấp
+// DB 'burstflow' cũ (++id số) tại chỗ — thay vào đó migrate best-effort sang DB mới (xem migrateFromLegacy).
+export const db = new Dexie('burstflow2');
 
 const uid = () =>
   globalThis.crypto?.randomUUID
@@ -10,58 +12,42 @@ const uid = () =>
     : 'id' + Date.now().toString(16) + Math.random().toString(16).slice(2);
 const now = () => Date.now();
 
-// v1 (cũ): ++id số. v2: id chuỗi + sync fields.
 db.version(1).stores({
-  projects: '++id, order, archived',
-  tasks: '++id, projectId, status, createdAt, doneAt',
-  blocks: '++id, taskId, projectId, startedAt, endedAt',
-  dayLogs: '&date',
-  settings: '&key'
+  projects: 'id, order, archived, deleted, updated_at',
+  tasks: 'id, projectId, status, createdAt, doneAt, deleted, updated_at',
+  blocks: 'id, taskId, projectId, startedAt, endedAt, deleted, updated_at',
+  dayLogs: 'date, deleted, updated_at',
+  settings: 'key',
+  _sync: 'key'
 });
 
-db.version(2)
-  .stores({
-    projects: 'id, order, archived, deleted, updated_at',
-    tasks: 'id, projectId, status, createdAt, doneAt, deleted, updated_at',
-    blocks: 'id, taskId, projectId, startedAt, endedAt, deleted, updated_at',
-    dayLogs: 'date, deleted, updated_at',
-    settings: 'key',
-    _sync: 'key'
-  })
-  .upgrade(async (tx) => {
-    // Migrate dữ liệu cũ (id số) → id UUID + stamp sync fields, remap khoá ngoại.
-    const ts = now();
-    const pMap = new Map();
-    const tMap = new Map();
-    const projects = await tx.table('projects').toArray();
-    const tasks = await tx.table('tasks').toArray();
-    const blocks = await tx.table('blocks').toArray();
-    const dayLogs = await tx.table('dayLogs').toArray();
-    await tx.table('projects').clear();
-    await tx.table('tasks').clear();
-    await tx.table('blocks').clear();
-    for (const p of projects) {
-      const nid = uid();
-      pMap.set(p.id, nid);
-      await tx.table('projects').add({ ...p, id: nid, updated_at: ts, deleted: 0 });
-    }
-    for (const t of tasks) {
-      const nid = uid();
-      tMap.set(t.id, nid);
-      await tx.table('tasks').add({ ...t, id: nid, projectId: pMap.get(t.projectId) ?? null, updated_at: ts, deleted: 0 });
-    }
-    for (const b of blocks) {
-      await tx.table('blocks').add({
-        ...b, id: uid(),
-        taskId: tMap.get(b.taskId) ?? null,
-        projectId: pMap.get(b.projectId) ?? null,
-        updated_at: ts, deleted: 0
-      });
-    }
-    for (const d of dayLogs) {
-      await tx.table('dayLogs').update(d.date, { updated_at: ts, deleted: 0 });
-    }
-  });
+// Chuyển dữ liệu từ DB cũ 'burstflow' (nếu có) → 'burstflow2'. Best-effort: lỗi thì bỏ qua, app vẫn chạy.
+export async function migrateFromLegacy() {
+  try {
+    if (!(await Dexie.exists('burstflow'))) return;
+    if ((await db.projects.count()) > 0) return; // đã có dữ liệu, không migrate đè
+    const old = new Dexie('burstflow');
+    old.version(1).stores({
+      projects: '++id, order, archived',
+      tasks: '++id, projectId, status, createdAt, doneAt',
+      blocks: '++id, taskId, projectId, startedAt, endedAt',
+      dayLogs: '&date', settings: '&key'
+    });
+    await old.open();
+    const [ps, ts, bs, ds] = await Promise.all([
+      old.table('projects').toArray(), old.table('tasks').toArray(),
+      old.table('blocks').toArray(), old.table('dayLogs').toArray()
+    ]);
+    const t = now(), pMap = new Map(), tMap = new Map();
+    for (const p of ps) { const nid = uid(); pMap.set(p.id, nid); await db.projects.add({ ...p, id: nid, updated_at: t, deleted: 0 }); }
+    for (const x of ts) { const nid = uid(); tMap.set(x.id, nid); await db.tasks.add({ ...x, id: nid, projectId: pMap.get(x.projectId) ?? null, updated_at: t, deleted: 0 }); }
+    for (const b of bs) { await db.blocks.add({ ...b, id: uid(), taskId: tMap.get(b.taskId) ?? null, projectId: pMap.get(b.projectId) ?? null, updated_at: t, deleted: 0 }); }
+    for (const d of ds) { await db.dayLogs.put({ ...d, updated_at: t, deleted: 0 }); }
+    old.close();
+  } catch {
+    /* best-effort — bỏ qua nếu migrate lỗi */
+  }
+}
 
 export async function seedIfEmpty() {
   const n = await db.projects.filter((p) => !p.deleted).count();
