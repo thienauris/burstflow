@@ -2,3 +2,9 @@ node_modules
 dist
 *.log
 smoke.mjs
+synctest.mjs
+.env
+.env.*
+supabase/.db-pw
+supabase/.temp
+supabase/.branches

@@ -4,8 +4,13 @@ import {
   db, addTaskToInbox, triageTask, sendTaskToInbox, deleteTask,
   addProject, updateProject, getActiveBlock, startBlock, endBlock,
   suggestNextProjectId, dayKey, dayBounds, saveDayNote,
-  getActiveBreak, endBreak, startAutoBreak
+  getActiveBreak, endBreak, startAutoBreak,
+  getSyncCode, setSyncCode, getMeta
 } from './db.js';
+import { syncOnce, startAutoSync } from './sync.js';
+
+const uid = () =>
+  globalThis.crypto?.randomUUID ? crypto.randomUUID() : 'c' + Date.now().toString(16);
 
 const DURATIONS = [60, 90, 120];
 const fmt = (s) => {
@@ -30,13 +35,20 @@ function useNow(active) {
 export default function App() {
   const [tab, setTab] = useState('focus');
   const activeBlock = useLiveQuery(() => getActiveBlock(), [], null);
-  const inboxCount = useLiveQuery(() => db.tasks.where('status').equals('inbox').count(), [], 0);
+  const inboxCount = useLiveQuery(
+    () => db.tasks.where('status').equals('inbox').and((t) => !t.deleted).count(),
+    [],
+    0
+  );
+
+  useEffect(() => startAutoSync(), []); // tự đồng bộ nếu đã đặt mã
 
   const tabs = [
     ['focus', 'Tập trung'],
     ['inbox', `Inbox${inboxCount ? ` (${inboxCount})` : ''}`],
     ['projects', 'Dự án'],
-    ['day', 'Ngày']
+    ['day', 'Ngày'],
+    ['sync', 'Đồng bộ']
   ];
 
   return (
@@ -53,6 +65,7 @@ export default function App() {
         {tab === 'inbox' && <InboxView />}
         {tab === 'projects' && <ProjectsView />}
         {tab === 'day' && <DayView />}
+        {tab === 'sync' && <SyncView />}
       </main>
 
       <nav className="tabbar">
@@ -115,8 +128,8 @@ function BreakView({ brk }) {
 }
 
 function StartForm() {
-  const projects = useLiveQuery(() => db.projects.where('archived').equals(0).toArray(), [], []);
-  const readyTasks = useLiveQuery(() => db.tasks.where('status').equals('ready').toArray(), [], []);
+  const projects = useLiveQuery(() => db.projects.where('archived').equals(0).and((p) => !p.deleted).toArray(), [], []);
+  const readyTasks = useLiveQuery(() => db.tasks.where('status').equals('ready').and((t) => !t.deleted).toArray(), [], []);
   const [suggested, setSuggested] = useState(null);
   const [projectId, setProjectId] = useState('');
   const [taskId, setTaskId] = useState('');
@@ -263,9 +276,9 @@ function EndDialog({ block, onClose }) {
 
 // ===========================================================================
 function InboxView() {
-  const inbox = useLiveQuery(() => db.tasks.where('status').equals('inbox').reverse().sortBy('createdAt'), [], []);
-  const ready = useLiveQuery(() => db.tasks.where('status').equals('ready').toArray(), [], []);
-  const projects = useLiveQuery(() => db.projects.where('archived').equals(0).toArray(), [], []);
+  const inbox = useLiveQuery(() => db.tasks.where('status').equals('inbox').and((t) => !t.deleted).reverse().sortBy('createdAt'), [], []);
+  const ready = useLiveQuery(() => db.tasks.where('status').equals('ready').and((t) => !t.deleted).toArray(), [], []);
+  const projects = useLiveQuery(() => db.projects.where('archived').equals(0).and((p) => !p.deleted).toArray(), [], []);
   const pName = (id) => projects.find((p) => p.id === id)?.name || '—';
 
   return (
@@ -306,7 +319,7 @@ function InboxView() {
 
 // ===========================================================================
 function ProjectsView() {
-  const projects = useLiveQuery(() => db.projects.orderBy('order').toArray(), [], []);
+  const projects = useLiveQuery(() => db.projects.orderBy('order').and((p) => !p.deleted).toArray(), [], []);
   const [name, setName] = useState('');
   const [color, setColor] = useState('#38bdf8');
 
@@ -347,7 +360,7 @@ function DayView() {
   const [start, end] = dayBounds();
   const key = dayKey();
   const blocks = useLiveQuery(
-    () => db.blocks.where('startedAt').between(start, end).reverse().sortBy('startedAt'),
+    () => db.blocks.where('startedAt').between(start, end).and((b) => !b.deleted).reverse().sortBy('startedAt'),
     [key],
     []
   );
@@ -410,6 +423,69 @@ function Stat({ n, label }) {
     <div className="stat">
       <div className="num">{n}</div>
       <div className="lab">{label}</div>
+    </div>
+  );
+}
+
+function SyncView() {
+  const code = useLiveQuery(() => getSyncCode(), [], '');
+  const lastSynced = useLiveQuery(() => getMeta('lastSyncedAt'), [], 0);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  useEffect(() => { if (code) setDraft(code); }, [code]);
+
+  const run = async () => {
+    setBusy(true); setMsg('');
+    try { const r = await syncOnce(); setMsg(`Đồng bộ xong · đẩy ${r?.pushed ?? 0} · nhận ${r?.pulled ?? 0}`); }
+    catch (e) { setMsg('Lỗi: ' + e.message); }
+    setBusy(false);
+  };
+  const save = async () => {
+    const c = draft.trim();
+    if (!c) { setMsg('Mã trống.'); return; }
+    await setSyncCode(c);
+    setMsg('Đã lưu mã. Đang đồng bộ…');
+    await run();
+  };
+
+  return (
+    <div className="stack">
+      <div className="card">
+        <h2>Đồng bộ nhiều thiết bị (mã sync)</h2>
+        <p className="muted">
+          Dán <b>cùng một mã</b> trên PC và điện thoại → dữ liệu gom chung. Mã chính là mật khẩu —
+          giữ kín, đừng chia sẻ.
+        </p>
+        <label className="lbl">Mã sync</label>
+        <div className="row">
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="dán mã hoặc tạo mới…" />
+          <button className="chip" onClick={() => setDraft(uid())}>Tạo mã mới</button>
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="primary" onClick={save}>Lưu &amp; bật đồng bộ</button>
+          <button className="primary" disabled={!code || busy} onClick={run}>
+            {busy ? 'Đang đồng bộ…' : 'Đồng bộ ngay'}
+          </button>
+        </div>
+        {msg && <div className="hint" style={{ marginTop: 12 }}>{msg}</div>}
+      </div>
+
+      <div className="card">
+        <h3>Trạng thái</h3>
+        <div className="task-row"><span className="t">Mã hiện tại</span><span className="proj-min">{code ? code.slice(0, 8) + '…' : 'chưa đặt'}</span></div>
+        <div className="task-row"><span className="t">Đồng bộ gần nhất</span><span className="proj-min">{lastSynced ? new Date(lastSynced).toLocaleString() : '—'}</span></div>
+        <div className="task-row"><span className="t">Tự đồng bộ</span><span className="proj-min">mỗi ~12s + khi mở/online</span></div>
+      </div>
+
+      <div className="card">
+        <h3>Cách dùng</h3>
+        <p className="muted">
+          1) Máy này: bấm <b>Tạo mã mới</b> → <b>Lưu &amp; bật</b>.<br />
+          2) Máy kia: mở app, vào tab Đồng bộ, <b>dán đúng mã đó</b> → Lưu.<br />
+          3) Xong — hai máy tự khớp (last-write-wins). Vẫn chạy offline, có mạng lại thì tự đồng bộ.
+        </p>
+      </div>
     </div>
   );
 }
