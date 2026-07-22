@@ -3,7 +3,8 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import {
   db, addTaskToInbox, triageTask, sendTaskToInbox, deleteTask,
   addProject, updateProject, getActiveBlock, startBlock, endBlock,
-  suggestNextProjectId, dayKey, dayBounds, saveDayNote
+  suggestNextProjectId, dayKey, dayBounds, saveDayNote,
+  getActiveBreak, endBreak, startAutoBreak
 } from './db.js';
 
 const DURATIONS = [60, 90, 120];
@@ -88,8 +89,29 @@ function QuickCapture({ locked }) {
 
 // ===========================================================================
 function FocusView({ activeBlock }) {
+  const brk = useLiveQuery(() => getActiveBreak(), [], undefined);
   if (activeBlock) return <RunningBlock block={activeBlock} />;
+  if (brk) return <BreakView brk={brk} />;
   return <StartForm />;
+}
+
+function BreakView({ brk }) {
+  const now = useNow(true);
+  const remaining = Math.round(brk.mins * 60 - (now - brk.startedAt) / 1000);
+  const done = remaining <= 0;
+  return (
+    <div className="card focus">
+      <div className="proj-tag" style={{ background: 'var(--ok)' }}>
+        NGHỈ {brk.mins}′{brk.isLong ? ' · nghỉ dài (sau 3 block)' : ''}
+      </div>
+      <div className="task-title">{done ? '✅ Nghỉ xong — quay lại được rồi' : '☕ Rời màn hình · vận động · uống nước'}</div>
+      <div className="timer" style={{ color: done ? 'var(--ok)' : 'var(--accent)' }}>{fmt(Math.max(0, remaining))}</div>
+      <div className="sub">Burst cần hồi phục. Đừng mở block mới khi chưa nghỉ đủ.</div>
+      <button className="primary big" onClick={() => endBreak()}>
+        {done ? '▶ Bắt đầu block tiếp' : 'Bỏ qua nghỉ →'}
+      </button>
+    </div>
+  );
 }
 
 function StartForm() {
@@ -217,6 +239,7 @@ function EndDialog({ block, onClose }) {
   const [complete, setComplete] = useState(false);
   const finish = async (delivered) => {
     await endBlock(block.id, { delivered, note, completeTask: complete });
+    await startAutoBreak(); // tự mở nghỉ giữa block
     onClose();
   };
   return (

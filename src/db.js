@@ -93,6 +93,36 @@ export async function suggestNextProjectId() {
 }
 
 // ---- Day log ---------------------------------------------------------------
+// ---- Break (nghỉ giữa block) ----------------------------------------------
+export const BREAK = { short: 15, long: 30, longEvery: 3 };
+
+export async function getSetting(key) {
+  const r = await db.settings.get(key);
+  return r ? r.value : undefined;
+}
+export async function setSetting(key, value) {
+  await db.settings.put({ key, value });
+}
+export async function getActiveBreak() {
+  return getSetting('break');
+}
+export async function endBreak() {
+  await db.settings.delete('break');
+}
+export async function completedBlocksToday() {
+  const [s, e] = dayBounds();
+  const arr = await db.blocks.where('startedAt').between(s, e).toArray();
+  return arr.filter((b) => b.endedAt).length;
+}
+// Gọi NGAY SAU endBlock: chọn nghỉ ngắn/dài theo số block đã xong hôm nay.
+export async function startAutoBreak() {
+  const n = await completedBlocksToday();
+  const isLong = n > 0 && n % BREAK.longEvery === 0;
+  const mins = isLong ? BREAK.long : BREAK.short;
+  await setSetting('break', { startedAt: Date.now(), mins, isLong });
+  return { mins, isLong };
+}
+
 export function dayKey(d = new Date()) {
   const x = new Date(d);
   return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
