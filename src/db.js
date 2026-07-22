@@ -85,6 +85,9 @@ export async function addProject(name, color) {
 export async function updateProject(id, patch) {
   await db.projects.update(id, { ...patch, updated_at: now() });
 }
+export async function deleteProject(id) {
+  await db.projects.update(id, { deleted: 1, updated_at: now() }); // soft delete để sync
+}
 
 // ---- Blocks ----------------------------------------------------------------
 export async function getActiveBlock() {

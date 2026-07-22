@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   db, addTaskToInbox, triageTask, sendTaskToInbox, deleteTask,
-  addProject, updateProject, getActiveBlock, startBlock, endBlock,
+  addProject, updateProject, deleteProject, getActiveBlock, startBlock, endBlock,
   suggestNextProjectId, dayKey, dayBounds, saveDayNote,
   getActiveBreak, endBreak, startAutoBreak,
   getSyncCode, setSyncCode, getMeta
@@ -285,6 +285,7 @@ function InboxView() {
     <div className="stack">
       <div className="card">
         <h2>Inbox — triage theo lịch (không xử lý giữa block)</h2>
+        {!projects.length && <p className="muted">⚠ Chưa có dự án. Vào tab <b>Dự án</b> tạo ít nhất 1 dự án để có thể triage.</p>}
         {!inbox.length && <p className="muted">Trống. Việc mới ghi nhanh sẽ về đây.</p>}
         {inbox.map((t) => (
           <div key={t.id} className="task-row">
@@ -336,6 +337,7 @@ function ProjectsView() {
         </div>
       </div>
       <div className="card">
+        {!projects.length && <p className="muted">Chưa có dự án — thêm một dự án ở trên để bắt đầu.</p>}
         {projects.map((p) => (
           <div key={p.id} className="task-row">
             <span className="dot" style={{ background: p.color }} />
@@ -348,6 +350,7 @@ function ProjectsView() {
             <button className="link" onClick={() => updateProject(p.id, { archived: p.archived ? 0 : 1 })}>
               {p.archived ? 'Bỏ lưu trữ' : 'Lưu trữ'}
             </button>
+            <button className="x" title="Xoá dự án" onClick={() => { if (confirm(`Xoá dự án "${p.name}"?`)) deleteProject(p.id); }}>✕</button>
           </div>
         ))}
       </div>
